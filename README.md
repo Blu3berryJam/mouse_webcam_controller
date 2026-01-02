@@ -1,6 +1,10 @@
 # Mouse Webcam Controller
 
+
 Control your mouse with hand tracking from the webcam using MediaPipe Tasks.
+
+Whole project is for study and educational purposes.
+There is also a head control module, but while the basic functionality is not perfect, this module is currently performing noticeably worse.
 
 ## Requirements
 - Python 3.10+
