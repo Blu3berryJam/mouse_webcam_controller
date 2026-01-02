@@ -46,10 +46,10 @@ Use the venv interpreter so mediapipe/opencv are found:
 ```powershell
 .\.venv\Scripts\python.exe main.py
 ```
-- On Linux:
-   ```bash
-   ./.venv/bin/python main.py
-   ```
+On Linux:
+```bash
+./.venv/bin/python main.py
+```
 - The app downloads `hand_landmarker.task` on first run if missing.
 - Move your index finger to control the cursor.
 - Pinch (index to middle fingertip) to click.
