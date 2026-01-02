@@ -9,7 +9,7 @@ There is also a head control module, but while the basic functionality is not pe
 
 This project is released under the MIT License (see LICENSE file).
 
-WARNING:
+##WARNING:
 IT PROBABLY WORKS FINE, BUT NO PROMISES.
 THIS SOFTWARE IS PROVIDED "AS IS" (NO WARRANTY WHATSOEVER).
 ESPECIALLY NOT FOR FITNESS FOR A PARTICULAR PURPOSE 
