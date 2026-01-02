@@ -2,6 +2,15 @@
 
 Dependencies:
 	pip install opencv-python mediapipe pyautogui numpy
+	
+	
+----------------------------------------------------------------------
+WARNING:
+IT PROBABLY WORKS FINE, BUT NO PROMISES.
+THIS SOFTWARE IS PROVIDED "AS IS" (NO WARRANTY WHATSOEVER).
+ESPECIALLY NOT FOR FITNESS FOR A PARTICULAR PURPOSE 
+(LIKE WORLD DOMINATION OR MAKING COFFEE).
+----------------------------------------------------------------------
 """
 
 from __future__ import annotations
