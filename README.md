@@ -6,6 +6,15 @@ Control your mouse with hand tracking from the webcam using MediaPipe Tasks.
 Whole project is for study and educational purposes.
 There is also a head control module, but while the basic functionality is not perfect, this module is currently performing noticeably worse.
 
+
+This project is released under the MIT License (see LICENSE file).
+
+WARNING:
+IT PROBABLY WORKS FINE, BUT NO PROMISES.
+THIS SOFTWARE IS PROVIDED "AS IS" (NO WARRANTY WHATSOEVER).
+ESPECIALLY NOT FOR FITNESS FOR A PARTICULAR PURPOSE 
+(LIKE WORLD DOMINATION OR MAKING COFFEE).
+
 ## Requirements
 - Python 3.10+
 - Dependencies listed in `requirements.txt`
