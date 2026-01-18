@@ -1,233 +1,318 @@
-"""Control the mouse with a hand captured from the webcam.
+"""Control the mouse with a hand captured from the webcam using RELATIVE movement.
 
 Dependencies:
-	pip install opencv-python mediapipe pyautogui numpy
-	
-	
-----------------------------------------------------------------------
-WARNING:
-IT PROBABLY WORKS FINE, BUT NO PROMISES.
-THIS SOFTWARE IS PROVIDED "AS IS" (NO WARRANTY WHATSOEVER).
-ESPECIALLY NOT FOR FITNESS FOR A PARTICULAR PURPOSE 
-(LIKE WORLD DOMINATION OR MAKING COFFEE).
-----------------------------------------------------------------------
+    pip install opencv-python mediapipe numpy
+    
+    Wymaga zainstalowanego i uruchomionego ydotool (daemon).
 """
 
 from __future__ import annotations
 
 import cv2
 import numpy as np
-import pyautogui
+import subprocess
+import os
+import time
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision.core import image
 from pathlib import Path
 import urllib.request
 
-pyautogui.FAILSAFE = False
+# --- KONFIGURACJA ---
+# Czułość myszki (wyższa = szybszy ruch, niższa = precyzyjniejszy)
+MOUSE_SENSITIVITY = 1.5 
 
-# Tunables
-SMOOTHING = 0.2          # 0..1, higher = smoother but laggier
-FINGER_BEND_THRESHOLD = 0.03  # normalized distance; if tip is below PIP, finger is bent
+# Wygładzanie ruchu (0.1 = bardzo pływające/opóźnione, 0.9 = bardzo responsywne/drżące)
+SMOOTHING = 0.5
+
+# Próg zgięcia palca do kliknięcia
+FINGER_BEND_THRESHOLD = 0.04
+
+
+# Ścieżka do modelu mediapipe
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 MODEL_PATH = Path(__file__).with_name("hand_landmarker.task")
 
-# Hand landmark indices
+# Indeksy punktów dłoni
 INDEX_TIP = 8
 INDEX_PIP = 6
 PINKY_TIP = 20
 PINKY_PIP = 18
+MIDDLE_TIP = 12
+MIDDLE_PIP = 10
+#serdeczny
+RING_TIP = 16
+RING_PIP = 14
+THuMB_TIP = 4
+THUMB_IP = 3
+THUMB_START = 1
+WRIST = 0
 
+# USTAWIENIE GNIAZDA YDOTOOL (Kluczowe dla działania!)
+# Domyślna ścieżka to /run/user/<UID>/.ydotool_socket
+UID = os.getuid()
+SOCKET_PATH = f"/run/user/{UID}/.ydotool_socket"
+os.environ["YDOTOOL_SOCKET"] = SOCKET_PATH
+# Użyjemy tej zmiennej do ścieżki demona
+YDOTOOLD_BIN = "/usr/bin/ydotoold" # Standardowa ścieżka po instalacji z menedżera pakietów
+
+def ensure_daemon_running():
+    """Uruchamia ydotoold w tle, jeśli nie jest jeszcze uruchomiony."""
+    print("--- Sprawdzanie i uruchamianie demona ydotoold ---")
+    
+    # 1. Sprawdzenie, czy demon już działa
+    try:
+        subprocess.check_output(["pgrep", "ydotoold"])
+        print("ydotoold już działa. Kontynuuję.")
+        return
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("ydotoold nie znaleziono. Uruchamiam...")
+
+    # 2. Uruchomienie demona
+    try:
+        # Uruchamiamy bez sudo, w tle. Demon sam zarządza gniazdem.
+        subprocess.Popen([YDOTOOLD_BIN], 
+                         stdout=subprocess.DEVNULL, 
+                         stderr=subprocess.DEVNULL,
+                         preexec_fn=os.setpgrp)
+        time.sleep(1) # Daj czas na uruchomienie
+        print("Demon ydotoold uruchomiony.")
+    except FileNotFoundError:
+        print(f"BŁĄD KRYTYCZNY: Nie znaleziono demona {YDOTOOLD_BIN}. Sprawdź ścieżkę.")
+        return
 
 def _ensure_model() -> Path:
-	"""Download the hand landmark model if it is not present."""
-	if MODEL_PATH.exists():
-		return MODEL_PATH
-	MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-	urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-	return MODEL_PATH
+    """Download the hand landmark model if it is not present."""
+    if MODEL_PATH.exists():
+        return MODEL_PATH
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    return MODEL_PATH
 
+def is_thumb_bent(hand_landmarks, handedness):
+    """Sprawdza, czy kciuk jest zgięty."""
+    thumb_tip = hand_landmarks[THuMB_TIP]
+    thumb_ip = hand_landmarks[THUMB_IP]
+    wrist = hand_landmarks[WRIST]
+
+    # Prosta heurystyka: jeśli koniuszek kciuka jest bliżej nadgarstka 
+    # w osi X niż jego staw, to jest zgięty.
+    # Trzeba uwzględnić, która to ręka.
+    if handedness == 'Left': # Lewa ręka (w lustrze prawa)
+        return thumb_tip.x > thumb_ip.x
+    else: # Prawa ręka (w lustrze lewa)
+        return thumb_tip.x < thumb_ip.x
 
 def move_mouse_with_hand() -> None:
-	"""Track one hand and move the mouse with the hand center."""
+    """Track hand and move mouse relatively."""
+    model_path = _ensure_model()
 
-	model_path = _ensure_model()
+    # Konfiguracja Mediapipe
+    base_options = mp_tasks.BaseOptions(model_asset_path=str(model_path))
+    options = vision.HandLandmarkerOptions(
+        base_options=base_options,
+        num_hands=2,
+        min_hand_detection_confidence=0.6,
+        min_hand_presence_confidence=0.6,
+        min_tracking_confidence=0.6,
+    )
+    landmarker = vision.HandLandmarker.create_from_options(options)
 
-	base_options = mp_tasks.BaseOptions(model_asset_path=str(model_path))
-	options = vision.HandLandmarkerOptions(
-		base_options=base_options,
-		num_hands=1,
-		min_hand_detection_confidence=0.6,
-		min_hand_presence_confidence=0.6,
-		min_tracking_confidence=0.6,
-	)
-	landmarker = vision.HandLandmarker.create_from_options(options)
+    # Kamera
+    cap = cv2.VideoCapture(0)
+    
+    # Zmienne do obliczania ruchu
+    # Screen width/height używamy tylko do skalowania czułości, nie do absolutnej pozycji
+    # Przyjmujemy standardowe 1920x1080 jako bazę odniesienia
+    VIRTUAL_SCREEN_W = 1920
+    VIRTUAL_SCREEN_H = 1200
+    
+    prev_screen_x = 0
+    prev_screen_y = 0
+    is_first_frame = True
+    is_left_click_held = False  # Stan przytrzymania lewego przycisku
+    
+    # Ograniczenie błędów (Deadzone) - ignoruj ruchy mniejsze niż X pikseli
+    DEADZONE = 2
 
-	cap = cv2.VideoCapture(0)
-	screen_w, screen_h = pyautogui.size()
-	prev_x, prev_y = None, None
-	
-	# Calibration points: (hand_x, hand_y) -> (screen_x, screen_y)
-	calibration_points = []
+    print("=== Startowanie Kontrolera (Tryb Wzg`lędny) ===")
+    print("Upewnij się, że demon ydotoold jest uruchomiony.")
+    print("Naciśnij ESC, aby wyjść.")
+    
+    # Timery dla cooldownów
+    last_click_time = 0
+    last_modifier_time = 0
+    CLICK_COOLDOWN = 1.0  # sekundy
+    MODIFIER_COOLDOWN = 1.0 # sekundy
 
-	def calibrate(frame: np.ndarray, result: vision.HandLandmarkerResult, target_screen_pos: tuple[int, int]) -> None:
-		"""Add a calibration point based on current hand position."""
-		if result.hand_landmarks:
-			hand = result.hand_landmarks[0]
-			hand_x = sum(lm.x for lm in hand) / len(hand)
-			hand_y = sum(lm.y for lm in hand) / len(hand)
-			calibration_points.append(((hand_x, hand_y), target_screen_pos))
-			print(f"Calibrated point {len(calibration_points)}: hand({hand_x:.2f}, {hand_y:.2f}) -> screen{target_screen_pos}")
+    while cap.isOpened():
+        ok, frame = cap.read()
+        if not ok:
+            break
 
-	def hand_to_screen(hand_x: float, hand_y: float) -> tuple[float, float]:
-		"""Map hand coordinates to screen coordinates using calibration."""
-		if len(calibration_points) < 2:
-			# Fallback: simple linear mapping if not calibrated
-			return np.interp(hand_x, [0, 1], [0, screen_w]), np.interp(hand_y, [0, 1], [0, screen_h])
-		
-		# Use two calibration points to compute scaling/offset
-		(hx1, hy1), (sx1, sy1) = calibration_points[0]
-		(hx2, hy2), (sx2, sy2) = calibration_points[1]
-		
-		# Linear regression for x and y independently
-		scale_x = (sx2 - sx1) / (hx2 - hx1) if hx2 != hx1 else 1
-		offset_x = sx1 - hx1 * scale_x
-		
-		scale_y = (sy2 - sy1) / (hy2 - hy1) if hy2 != hy1 else 1
-		offset_y = sy1 - hy1 * scale_y
-		
-		x = max(0, min(screen_w, hand_x * scale_x + offset_x))
-		y = max(0, min(screen_h, hand_y * scale_y + offset_y))
-		return x, y
+        current_time = time.time()
 
-	print("=== Auto-Calibration Mode ===")
-	print("Place your hand at TOP-LEFT corner of screen, hold still...")
-	
-	calibrated = False
-	calibration_stage = 0  # 0 = TOP-LEFT, 1 = BOTTOM-RIGHT
-	stable_frames = 0
-	required_stable_frames = 15  # frames to hold steady before capturing
-	last_hand_center = None
+        # Odbicie lustrzane i zmiana kolorów
+        frame = cv2.flip(frame, 1)
+        # Zmniejszenie rozdzielczości dla wydajności
+        frame = cv2.resize(frame, (640, 480))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        mp_image = image.Image(image_format=image.ImageFormat.SRGB, data=rgb)
+        result = landmarker.detect(mp_image)
+        
+        h, w = frame.shape[:2]
 
-	while cap.isOpened():
-		ok, frame = cap.read()
-		if not ok:
-			break
+        # --- Logika dla dwóch rąk ---
+        mouse_hand = None
+        modifier_hand = None
 
-		frame = cv2.flip(frame, 1)
-		frame = cv2.resize(frame, (640, 480))
-		rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-		mp_image = image.Image(image_format=image.ImageFormat.SRGB, data=rgb)
-		result = landmarker.detect(mp_image)
+        if result.hand_landmarks and len(result.hand_landmarks) > 0:
+            for i, handedness_obj in enumerate(result.handedness):
+                hand_label = handedness_obj[0].category_name
+                if hand_label == 'Left':  # Lewa ręka do sterowania (w lustrze prawa)
+                    mouse_hand = result.hand_landmarks[i]
+                    mouse_hand_handedness = hand_label
+                elif hand_label == 'Right':  # Prawa ręka jako modyfikator (w lustrze lewa)
+                    modifier_hand = result.hand_landmarks[i]
+                    modifier_hand_handedness = hand_label
 
-		# Draw calibration UI
-		h, w = frame.shape[:2]
-		if len(calibration_points) == 0:
-			# Show TOP-LEFT corner target
-			cv2.circle(frame, (20, 20), 30, (0, 255, 0), 2)
-			cv2.putText(frame, "Place hand at TOP-LEFT", (50, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-			progress_text = f"Stable: {stable_frames}/{required_stable_frames}"
-			cv2.putText(frame, progress_text, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-		elif len(calibration_points) == 1:
-			# Show BOTTOM-RIGHT corner target
-			cv2.circle(frame, (w - 20, h - 20), 30, (0, 165, 255), 2)
-			cv2.putText(frame, "Place hand at BOTTOM-RIGHT", (w - 300, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-			progress_text = f"Stable: {stable_frames}/{required_stable_frames}"
-			cv2.putText(frame, progress_text, (w - 280, h - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-		else:
-			# Calibration complete
-			cv2.putText(frame, "Calibration Complete!", (w // 2 - 150, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
-			cv2.putText(frame, "Starting mouse control...", (w // 2 - 180, h // 2 + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-		
-		# Show instruction bar
-		instruction_text = "Hold hand steady at corner | ESC=Quit"
-		cv2.putText(frame, instruction_text, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-		
-		# Auto-calibration logic
-		if not calibrated and result.hand_landmarks:
-			hand = result.hand_landmarks[0]
-			hand_x = sum(lm.x for lm in hand) / len(hand)
-			hand_y = sum(lm.y for lm in hand) / len(hand)
-			
-			if len(calibration_points) == 0:
-				# Waiting for TOP-LEFT (check if hand is in top-left region)
-				if hand_x < 0.2 and hand_y < 0.2:
-					if last_hand_center and abs(hand_x - last_hand_center[0]) < 0.05 and abs(hand_y - last_hand_center[1]) < 0.05:
-						stable_frames += 1
-					else:
-						stable_frames = 1
-					
-					if stable_frames >= required_stable_frames:
-						calibrate(frame, result, (0, 0))
-						stable_frames = 0
-						last_hand_center = None
-				else:
-					stable_frames = 0
-					
-			elif len(calibration_points) == 1:
-				# Waiting for BOTTOM-RIGHT (check if hand is in bottom-right region)
-				if hand_x > 0.8 and hand_y > 0.8:
-					if last_hand_center and abs(hand_x - last_hand_center[0]) < 0.05 and abs(hand_y - last_hand_center[1]) < 0.05:
-						stable_frames += 1
-					else:
-						stable_frames = 1
-					
-					if stable_frames >= required_stable_frames:
-						calibrate(frame, result, (screen_w - 1, screen_h - 1))
-						calibrated = True
-						stable_frames = 0
-						last_hand_center = None
-				else:
-					stable_frames = 0
-			
-			last_hand_center = (hand_x, hand_y)
-		
-		key = cv2.waitKey(1) & 0xFF
-		if key == 27:  # ESC
-			break
-		
-		cv2.imshow("Hand Mouse", frame)
+            # --- Logika ręki modyfikującej (przełącznik hold) ---
+            if modifier_hand and (current_time - last_modifier_time > MODIFIER_COOLDOWN):
+                if is_thumb_bent(modifier_hand, modifier_hand_handedness):
+                    cv2.putText(frame, "THUMB BENT", (w - 250, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                else:
+                    mod_idx_tip = modifier_hand[INDEX_TIP]
+                    mod_idx_pip = modifier_hand[INDEX_PIP]
+                    if mod_idx_tip.y > mod_idx_pip.y + FINGER_BEND_THRESHOLD:
+                        is_left_click_held = not is_left_click_held  # Przełącz stan
+                        if is_left_click_held:
+                            subprocess.run(["ydotool", "key", "272:1"], stdout=subprocess.DEVNULL) # Wciśnij
+                            print("Przełącznik: WCIŚNIĘTO")
+                        else:
+                            subprocess.run(["ydotool", "key", "272:0"], stdout=subprocess.DEVNULL) # Puść
+                            print("Przełącznik: PUSZCZONO")
+                        last_modifier_time = current_time # Zresetuj cooldown
 
-		if calibrated and result.hand_landmarks:
-			hand = result.hand_landmarks[0]
+        # Wizualizacja stanu przytrzymania
+        if is_left_click_held:
+            cv2.putText(frame, "[HOLD]", (w // 2 - 50, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
 
-			# Calculate hand center
-			hand_x = sum(lm.x for lm in hand) / len(hand)
-			hand_y = sum(lm.y for lm in hand) / len(hand)
+        if mouse_hand:
+            if is_thumb_bent(mouse_hand, mouse_hand_handedness):
+                cv2.putText(frame, "THUMB BENT", (10, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+            else:
+                # --- Ruch myszką (logika pozostaje taka sama, ale używa mouse_hand) ---
+                hand = mouse_hand
+                
+                # 1. Zamiast środka dłoni nadgarstek (punkt 0)
+                hand_x = hand[WRIST].x
+                hand_y = hand[WRIST].y - 0.1  # Korekta w górę, aby środek dłoni był bardziej centralny
 
-			# Map using calibration
-			x, y = hand_to_screen(hand_x, hand_y)
+                # 2. Mapuj na wirtualną rozdzielczość (dla łatwiejszej matematyki)
+                target_screen_x = np.interp(hand_x, [0, 1], [0, VIRTUAL_SCREEN_W])
+                target_screen_y = np.interp(hand_y, [0, 1], [0, VIRTUAL_SCREEN_H])
 
-			if prev_x is None:
-				prev_x, prev_y = x, y
-			x = prev_x + (x - prev_x) * (1 - SMOOTHING)
-			y = prev_y + (y - prev_y) * (1 - SMOOTHING)
-			prev_x, prev_y = x, y
+                if is_first_frame:
+                    prev_screen_x = target_screen_x
+                    prev_screen_y = target_screen_y
+                    is_first_frame = False
+                else:
+                    # 3. Wygładzanie (Smoothing)
+                    curr_screen_x = prev_screen_x + (target_screen_x - prev_screen_x) * (1 - SMOOTHING)
+                    curr_screen_y = prev_screen_y + (target_screen_y - prev_screen_y) * (1 - SMOOTHING)
 
-			pyautogui.moveTo(x, y)
+                    # 4. Oblicz Deltę (Różnicę)
+                    delta_x = int((curr_screen_x - prev_screen_x) * MOUSE_SENSITIVITY)
+                    delta_y = int((curr_screen_y - prev_screen_y) * MOUSE_SENSITIVITY)
 
-			# Index finger bent = click
-			idx_tip = hand[INDEX_TIP]
-			idx_pip = hand[INDEX_PIP]
-			if idx_tip.y > idx_pip.y + FINGER_BEND_THRESHOLD:
-				pyautogui.click()
+                    # 5. Aktualizacja poprzedniej pozycji
+                    prev_screen_x = curr_screen_x
+                    prev_screen_y = curr_screen_y
 
-			# Pinky finger bent = right-click
-			pinky_tip = hand[PINKY_TIP]
-			pinky_pip = hand[PINKY_PIP]
-			if pinky_tip.y > pinky_pip.y + FINGER_BEND_THRESHOLD:
-				pyautogui.rightClick()
+                    # 7. Wysłanie komendy do ydotool
+                    if (abs(delta_x) > DEADZONE or abs(delta_y) > DEADZONE):
+                        try:
+                            command = ["ydotool", "mousemove", "-x", str(delta_x), "-y", str(delta_y)]
+                            subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
+                        except (subprocess.CalledProcessError, FileNotFoundError):
+                            print("Błąd podczas poruszania myszą.")
 
-			# Simple on-screen landmarks for visual feedback
-			for lm in hand:
-				cx, cy = int(lm.x * frame.shape[1]), int(lm.y * frame.shape[0])
-				cv2.circle(frame, (cx, cy), 3, (0, 255, 0), -1)
-		
-		cv2.imshow("Hand Mouse", frame)
+                # 6. Wizualizacja na obrazie z kamery
+                vis_x = int(hand_x * w)
+                vis_y = int(hand_y * h)
+                cv2.circle(frame, (vis_x, vis_y), 5, (255, 0, 0), cv2.FILLED)
 
-	cap.release()
-	cv2.destroyAllWindows()
+                # --- KLIKANIE (dla ręki sterującej) ---
+                if current_time - last_click_time > CLICK_COOLDOWN:
+                    idx_tip = hand[INDEX_TIP]
+                    idx_pip = hand[INDEX_PIP]
+                    pinky_tip = hand[PINKY_TIP]
+                    pinky_pip = hand[PINKY_PIP]
+                    middle_tip = hand[MIDDLE_TIP]
+                    middle_pip = hand[MIDDLE_PIP]
+                    ring_tip = hand[RING_TIP]
+                    ring_pip = hand[RING_PIP]
 
+                    # Lewy Klik (Palec wskazujący)
+                    if idx_tip.y > idx_pip.y + FINGER_BEND_THRESHOLD:
+                        subprocess.run(["ydotool", "click", "0xC0"], stdout=subprocess.DEVNULL)
+                        cv2.putText(frame, "CLICK", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        last_click_time = current_time
+
+                    # Prawy Klik (Mały palec)
+                    elif pinky_tip.y > pinky_pip.y + FINGER_BEND_THRESHOLD:
+                        subprocess.run(["ydotool", "click", "0xC1"], stdout=subprocess.DEVNULL) 
+                        cv2.putText(frame, "R-CLICK", (w-150, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                        last_click_time = current_time
+
+                    # Środkowy klik (serdeczny palec)
+                    elif ring_tip.y > ring_pip.y + FINGER_BEND_THRESHOLD:
+                        subprocess.run(["ydotool", "click", "0xC2"], stdout=subprocess.DEVNULL)
+                        cv2.putText(frame, "M-CLICK", (w//2 - 100, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                        last_click_time = current_time
+
+                    # Double Click (środkowy palec)
+                    elif middle_tip.y > middle_pip.y + FINGER_BEND_THRESHOLD:
+                        subprocess.run(["ydotool", "click", "0xC0"], stdout=subprocess.DEVNULL)
+                        time.sleep(0.05)
+                        subprocess.run(["ydotool", "click", "0xC0"], stdout=subprocess.DEVNULL)
+                        cv2.putText(frame, "D-CLICK", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                        last_click_time = current_time
+
+            # Rysowanie punktów dłoni
+            for lm in mouse_hand:
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                cv2.circle(frame, (cx, cy), 2, (0, 255, 0), -1)
+        
+        else:
+            # Jeśli ręka zniknie, resetujemy flagę, żeby nie było skoku po powrocie
+            is_first_frame = True
+            # Opcjonalnie: puść przycisk, jeśli ręka sterująca zniknie
+            # if is_left_click_held:
+            #     subprocess.run(["ydotool", "key", "272:0"], stdout=subprocess.DEVNULL)
+            #     is_left_click_held = False
+            #     print("Ręka sterująca zniknęła, puszczam przycisk.")
+
+        # Instrukcje na ekranie
+        cv2.putText(frame, "ESC - Wyjscie", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.imshow("Hand Mouse (Relative)", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:  # ESC
+            break
+        
+    # Upewnij się, że przycisk jest zwolniony po wyjściu z pętli
+    if is_left_click_held:
+        subprocess.run(["ydotool", "key", "272:0"], stdout=subprocess.DEVNULL)
+        print("Wyjście z programu, puszczam przycisk.")
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-	move_mouse_with_hand()
+    ensure_daemon_running()
+    
+    model_path = _ensure_model()
+    move_mouse_with_hand()
