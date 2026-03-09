@@ -1,6 +1,6 @@
 ## This project version uses ydotool 
 This version of the project utilizes [ydotool](https://github.com/ReimuNotMoe/ydotool/tree/master) for input handling to ensure compatibility with most Linux distributions, including Wayland.
-##Compatibility Notes:
+## Compatibility Notes:
 - Windows / Linux (X11): If you are on Windows or prefer not to use external tools, please check the pyautogui-version branch.
 - Note: The pyautogui version was tested exclusively on Windows and Linux systems using X11 and may not function correctly on Wayland.
 
