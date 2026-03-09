@@ -48,7 +48,7 @@ DRIFT_ADAPT_RATE = 0.01  # how fast neutral recenters when nearly still
 MOUTH_OPEN_THRESHOLD = 0.06  # mouth open to click/hold
 CLICK_COOLDOWN_FRAMES = 18   # frames between clicks
 BROW_RAISE_THRESHOLD = 0.025 # eyebrow raise gap for right-click
-HOLD_TOGGLE_FRAMES = 12      # frames mouth-open to toggle hold
+HbackgroundOLD_TOGGLE_FRAMES = 12      # frames mouth-open to toggle hold
 
 
 def _ensure_model() -> Path:
